@@ -1,9 +1,12 @@
 import logging
+import os
+import secrets
 from contextlib import asynccontextmanager
 from typing import Callable, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, field_validator
 
 from rag import RAGResponse, RAGService, create_rag_service
@@ -43,10 +46,17 @@ class QueryResponse(BaseModel):
 
 def create_app(
     service_factory: Callable[[], RAGService] = create_rag_service,
+    api_key: str | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         load_dotenv()
+        configured_api_key = (
+            api_key if api_key is not None else os.getenv("KAIRO_API_KEY")
+        )
+        if not configured_api_key:
+            raise RuntimeError("KAIRO_API_KEY must be configured for the HTTP API.")
+        app.state.api_key = configured_api_key
         app.state.rag_service = service_factory()
         try:
             yield
@@ -54,8 +64,28 @@ def create_app(
             app.state.rag_service = None
 
     app = FastAPI(title="Kairo RAG API", lifespan=lifespan)
+    bearer_scheme = HTTPBearer(auto_error=False)
 
-    @app.post("/query", response_model=QueryResponse)
+    def require_api_key(
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    ) -> None:
+        expected_api_key = getattr(app.state, "api_key", None)
+        if (
+            expected_api_key is None
+            or credentials is None
+            or not secrets.compare_digest(credentials.credentials, expected_api_key)
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="A valid bearer API key is required.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    @app.post(
+        "/query",
+        response_model=QueryResponse,
+        dependencies=[Depends(require_api_key)],
+    )
     def query(payload: QueryRequest, request: Request) -> QueryResponse:
         service: RAGService = request.app.state.rag_service
         try:

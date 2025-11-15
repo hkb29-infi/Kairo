@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from api import create_app
 from rag import RAGResponse
@@ -20,9 +21,9 @@ class FakeRAGService:
 
 def test_query_selects_variant_and_returns_measurements() -> None:
     service = FakeRAGService()
-    app = create_app(lambda: service)
+    app = create_app(lambda: service, api_key="test-secret")
 
-    with TestClient(app) as client:
+    with TestClient(app, headers={"Authorization": "Bearer test-secret"}) as client:
         response = client.post(
             "/query",
             json={
@@ -43,9 +44,9 @@ def test_query_selects_variant_and_returns_measurements() -> None:
 
 
 def test_query_rejects_blank_question_and_invalid_variant() -> None:
-    app = create_app(FakeRAGService)
+    app = create_app(FakeRAGService, api_key="test-secret")
 
-    with TestClient(app) as client:
+    with TestClient(app, headers={"Authorization": "Bearer test-secret"}) as client:
         blank = client.post("/query", json={"question": "  "})
         invalid_variant = client.post(
             "/query",
@@ -54,3 +55,24 @@ def test_query_rejects_blank_question_and_invalid_variant() -> None:
 
     assert blank.status_code == 422
     assert invalid_variant.status_code == 422
+
+
+def test_query_requires_a_valid_api_key() -> None:
+    app = create_app(FakeRAGService, api_key="test-secret")
+
+    with TestClient(app) as client:
+        response = client.post("/query", json={"question": "question"})
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_api_startup_requires_an_api_key(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("KAIRO_API_KEY", raising=False)
+    app = create_app(FakeRAGService)
+
+    with pytest.raises(RuntimeError, match="KAIRO_API_KEY must be configured"):
+        with TestClient(app):
+            pass
