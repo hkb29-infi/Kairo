@@ -7,10 +7,12 @@
 # ============================================================
 
 import os
-import logging
+import hashlib
+from pathlib import Path
 from typing import Tuple
 import chromadb
 from langchain_chroma import Chroma
+from langchain_core.documents import Document
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.document_loaders import TextLoader, DirectoryLoader
 from dotenv import load_dotenv
@@ -58,48 +60,56 @@ def setup_chroma_database() -> Tuple[chromadb.ClientAPI, GoogleGenerativeAIEmbed
 # -------------------------------------------------------------
 # Document Ingestion
 # -------------------------------------------------------------
-def ingest_documents() -> None:
-    """Ingest local text documents into ChromaDB Cloud collection."""
-    print("Connecting to ChromaDB Cloud...")
+def _document_id(document: Document) -> str:
+    source = str(document.metadata["source"]).replace("\\", "/")
+    identity = f"{source}\0{document.page_content}".encode("utf-8")
+    return hashlib.sha256(identity).hexdigest()
 
-    
-    try:
-        client, embeddings = setup_chroma_database()
-        print("Connected to ChromaDB Cloud successfully.")
 
-    except Exception as e:
-        print(f"Failed to connect to ChromaDB Cloud: {e}")
-        return
+def ingest_documents(
+    data_directory: str | Path = "./data",
+    batch_size: int = 100,
+) -> int:
+    """Stream text files into Chroma in bounded, repeatable batches."""
+    root = Path(data_directory).resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"Document directory does not exist: {root}")
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1.")
 
-    print("Setting up collection...")
-    try:
-        collection = Chroma(
-            collection_name=collection_name,
-            embedding_function=embeddings,
-            client=client
-        )
-        print(f"Collection '{collection_name}' is ready.")
+    client, embeddings = setup_chroma_database()
+    collection = Chroma(
+        collection_name=collection_name,
+        embedding_function=embeddings,
+        client=client,
+    )
+    loader = DirectoryLoader(
+        str(root), glob="**/*.txt", loader_cls=TextLoader
+    )
 
-    except Exception as e:
-        print(f"Failed to set up collection: {e}")
-        return
+    batch: list[Document] = []
+    ids: list[str] = []
+    ingested_count = 0
+    for document in loader.lazy_load():
+        source_path = Path(document.metadata["source"])
+        if not source_path.is_absolute():
+            source_path = root / source_path
+        document.metadata["source"] = source_path.resolve().relative_to(root).as_posix()
+        batch.append(document)
+        ids.append(_document_id(document))
+        if len(batch) == batch_size:
+            collection.add_documents(batch, ids=ids)
+            ingested_count += len(batch)
+            batch, ids = [], []
 
-    print("Loading documents from local machine...")
-    try:
-        loader = DirectoryLoader("./data/", glob="**/*.txt", loader_cls=TextLoader)
-        documents = loader.load()
-
-        if not documents:
-            print("No documents found in the specified directory. Please add documents and try again.")
-            return
-
-        print(f"Loaded {len(documents)} documents.")
-        collection.add_documents(documents)
-        print(f"Successfully ingested {len(documents)} documents into collection '{collection_name}'.")
-    except Exception as e:
-        print(f"Error while ingesting documents: {e}")
+    if batch:
+        collection.add_documents(batch, ids=ids)
+        ingested_count += len(batch)
+    if ingested_count == 0:
+        raise FileNotFoundError(f"No .txt documents found in {root}")
+    return ingested_count
 
 
 if __name__ == "__main__":
-    ingest_documents()
-
+    count = ingest_documents()
+    print(f"Ingested {count} documents into collection '{collection_name}'.")
