@@ -3,3 +3,5 @@
 __pycache__/
 *.pyc
 .vscode/
+evaluation/golden*.jsonl
+evaluation/results*.json

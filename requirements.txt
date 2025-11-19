@@ -4,4 +4,5 @@ langchain>=1.0,<2
 langchain-chroma>=1.0,<2
 langchain-google-genai>=4.0,<5
 python-dotenv>=1.0,<2
+ragas>=0.3.9,<0.4
 uvicorn>=0.30,<1
