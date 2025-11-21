@@ -6,18 +6,6 @@ from langchain_core.documents import Document
 import ingest
 
 
-class FakeLoader:
-    documents: list[Document] = []
-
-    def __init__(self, path: str, *, glob: str, loader_cls: type) -> None:
-        assert Path(path).is_absolute()
-        assert glob == "**/*.txt"
-        assert loader_cls is ingest.TextLoader
-
-    def lazy_load(self):
-        yield from self.documents
-
-
 class FakeCollection:
     def __init__(self) -> None:
         self.batches: list[tuple[list[Document], list[str]]] = []
@@ -31,17 +19,14 @@ def test_ingestion_streams_batches_with_stable_ids(
 ) -> None:
     root = tmp_path / "data"
     root.mkdir()
-    FakeLoader.documents = [
-        Document(page_content=f"Document {index}", metadata={"source": f"{index}.txt"})
-        for index in range(3)
-    ]
+    for index in range(3):
+        (root / f"{index}.txt").write_text(f"Document {index}", encoding="utf-8")
     collection = FakeCollection()
-    monkeypatch.setattr(ingest, "DirectoryLoader", FakeLoader)
-    monkeypatch.setattr(ingest, "setup_chroma_database", lambda: (object(), object()))
-    monkeypatch.setattr(ingest, "Chroma", lambda **kwargs: collection)
+    monkeypatch.setattr(ingest, "setup_vector_store", lambda: collection)
 
     assert ingest.ingest_documents(root, batch_size=2) == 3
     assert [len(batch) for batch, _ in collection.batches] == [2, 1]
+    assert all("chunk_index" in doc.metadata for batch, _ in collection.batches for doc in batch)
     original_ids = [doc_id for _, batch_ids in collection.batches for doc_id in batch_ids]
 
     collection.batches.clear()
@@ -58,3 +43,22 @@ def test_ingestion_rejects_missing_directory(tmp_path: Path) -> None:
 def test_ingestion_rejects_invalid_batch_size(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="batch_size must be at least 1"):
         ingest.ingest_documents(tmp_path, batch_size=0)
+
+
+def test_ingestion_splits_long_documents_with_overlap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "data"
+    root.mkdir()
+    (root / "guide.txt").write_text(
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa",
+        encoding="utf-8",
+    )
+    collection = FakeCollection()
+    monkeypatch.setattr(ingest, "setup_vector_store", lambda: collection)
+
+    assert ingest.ingest_documents(root, chunk_size=24, chunk_overlap=5) > 1
+    chunks = [doc for batch, _ in collection.batches for doc in batch]
+    assert len({doc.metadata["chunk_index"] for doc in chunks}) == len(chunks)
+    text_chunks = ingest._chunk_text("abcdefghij klmnop", chunk_size=10, chunk_overlap=3)
+    assert text_chunks[0][-3:] == text_chunks[1][:3]
