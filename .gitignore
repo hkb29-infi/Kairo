@@ -1,5 +1,6 @@
 #.gitignore
 .env
+.kairo/
 __pycache__/
 *.pyc
 .vscode/

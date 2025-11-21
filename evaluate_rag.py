@@ -4,10 +4,6 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from langchain_google_genai import (
-    ChatGoogleGenerativeAI,
-    GoogleGenerativeAIEmbeddings,
-)
 
 from evaluation import load_golden_dataset, run_comparison
 from rag import create_rag_service
@@ -34,6 +30,11 @@ def main() -> None:
     load_dotenv()
     cases = load_golden_dataset(args.dataset, minimum_samples=args.min_samples)
     api_key = os.environ["GOOGLE_API_KEY"]
+    from langchain_google_genai import (
+        ChatGoogleGenerativeAI,
+        GoogleGenerativeAIEmbeddings,
+    )
+
     judge_model = os.getenv("GEMINI_JUDGE_MODEL", "gemini-2.5-flash")
     judge_llm = ChatGoogleGenerativeAI(
         model=judge_model,

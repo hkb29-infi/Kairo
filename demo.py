@@ -1,20 +1,17 @@
-from pathlib import Path
-from time import perf_counter
+import html
 
+from fastapi import Request
 from fastapi.responses import HTMLResponse
 
 from api import create_app
-from rag import RAGResponse, RetrievalMode
-
-DEMO_API_KEY = "local-demo-only"
-SAMPLE_DOCUMENT = Path(__file__).parent / "data" / "document2.txt"
 
 DEMO_PAGE = """<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="kairo-api-key" content="__KAIRO_API_KEY__">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Kairo | Local Demo</title>
+  <title>Kairo | Local RAG</title>
   <style>
     :root { color-scheme: dark; font: 16px/1.55 system-ui, sans-serif; }
     body { margin: 0; background: #101522; color: #e8edf8; }
@@ -49,15 +46,16 @@ DEMO_PAGE = """<!doctype html>
 <body>
   <main>
     <h1>Kairo</h1>
-    <div class="muted">Retrieval-augmented assistant · local demo</div>
-    <div class="notice"><strong>Offline demo, not the live Gemini/Chroma system.</strong>
-      This page sends requests to a localhost-only demo endpoint. It returns the
-      sample file as context and a fixed explanatory response; no real model
-      generation or vector search is performed. Latency is only local request
-      handling time and is not a performance benchmark.</div>
+    <div class="muted">Retrieval-augmented assistant · local mode</div>
+    <div class="notice"><strong>Local-first mode.</strong>
+      This app performs real local Chroma vector search using deterministic
+      lexical embeddings, then returns an extractive answer from the retrieved
+      documents. It requires no Gemini API key or cloud account. For semantic
+      generation and Gemini embeddings, switch to cloud mode after configuring
+      credentials. Local embeddings are a simple baseline, not a semantic model.</div>
     <form id="query-form">
       <label for="question">Ask a question</label>
-      <textarea id="question" required>What does the sample document say about Kairo?</textarea>
+      <textarea id="question" required>Who is Bernard?</textarea>
       <div class="grid">
         <div>
           <label for="retrieval-mode">Retrieval variant</label>
@@ -71,17 +69,17 @@ DEMO_PAGE = """<!doctype html>
           <input id="k" type="number" min="1" max="20" value="3">
         </div>
       </div>
-      <button id="submit" type="submit">Send demo query</button>
+      <button id="submit" type="submit">Ask Kairo</button>
       <div id="status" role="status" aria-live="polite"></div>
     </form>
     <section class="results" aria-label="Query result">
       <article class="card">
-        <h2>Response</h2>
-        <pre id="answer">Submit a query to see the local request flow.</pre>
+        <h2>Answer</h2>
+        <pre id="answer">Ask a question about your indexed documents.</pre>
       </article>
       <article class="card">
-        <h2>Retrieved context (sample file)</h2>
-        <pre id="context">No request yet.</pre>
+        <h2>Retrieved context</h2>
+        <pre id="context">No documents retrieved yet.</pre>
         <p class="muted" id="metadata"></p>
       </article>
     </section>
@@ -93,13 +91,13 @@ DEMO_PAGE = """<!doctype html>
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       button.disabled = true;
-      status.textContent = "Sending request to the local Kairo API…";
+      status.textContent = "Searching the local Chroma index…";
       try {
         const response = await fetch("/query", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "Authorization": "Bearer local-demo-only"
+            "Authorization": `Bearer ${document.querySelector('meta[name="kairo-api-key"]').content}`
           },
           body: JSON.stringify({
             question: document.querySelector("#question").value,
@@ -113,10 +111,10 @@ DEMO_PAGE = """<!doctype html>
         }
         document.querySelector("#answer").textContent = data.answer;
         document.querySelector("#context").textContent =
-          data.contexts.join("\\n\\n") || "No context found.";
+          data.contexts.join("\\n\\n") || "No relevant documents found.";
         document.querySelector("#metadata").textContent =
-          `${data.retrieval_mode.toUpperCase()} · local handler: ${data.latency_ms.toFixed(2)} ms`;
-        status.textContent = "Request completed.";
+          `${data.retrieval_mode.toUpperCase()} · local end-to-end: ${data.latency_ms.toFixed(2)} ms`;
+        status.textContent = "Local query completed.";
       } catch (error) {
         status.textContent = `Request failed: ${error.message}`;
       } finally {
@@ -128,40 +126,10 @@ DEMO_PAGE = """<!doctype html>
 </html>
 """
 
-
-class OfflineDemoService:
-    def __init__(self) -> None:
-        if not SAMPLE_DOCUMENT.is_file():
-            raise FileNotFoundError(f"Demo sample document is missing: {SAMPLE_DOCUMENT}")
-        self._sample_text = SAMPLE_DOCUMENT.read_text(encoding="utf-8").strip()
-        if not self._sample_text:
-            raise ValueError(f"Demo sample document is empty: {SAMPLE_DOCUMENT}")
-
-    def ask(
-        self,
-        question: str,
-        retrieval_mode: RetrievalMode = "mmr",
-        k: int = 3,
-    ) -> RAGResponse:
-        started_at = perf_counter()
-        del question, k
-        answer = (
-            "This is a fixed offline-demo response. The request reached the "
-            "Kairo API, but no LLM was called. See the sample-file context "
-            "alongside this response."
-        )
-        contexts = [self._sample_text]
-        return RAGResponse(
-            answer=answer,
-            contexts=contexts,
-            latency_ms=(perf_counter() - started_at) * 1000,
-            retrieval_mode=retrieval_mode,
-        )
-
-
-app = create_app(OfflineDemoService, api_key=DEMO_API_KEY)
+app = create_app()
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-def demo_page() -> HTMLResponse:
-    return HTMLResponse(DEMO_PAGE)
+def demo_page(request: Request) -> HTMLResponse:
+    api_key = html.escape(request.app.state.api_key, quote=True)
+    return HTMLResponse(DEMO_PAGE.replace("__KAIRO_API_KEY__", api_key))

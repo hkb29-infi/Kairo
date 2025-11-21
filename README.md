@@ -1,19 +1,73 @@
 # Kairo
 
-Kairo is a document-grounded assistant built with LangChain, ChromaDB Cloud,
-and Gemini. It provides an interactive CLI and a stateless HTTP API. The
-default retrieval strategy is maximum marginal relevance (MMR); similarity
-retrieval is also available as a comparison baseline.
+Kairo is a document-grounded assistant with a **local-first** setup. Local
+mode uses persistent ChromaDB, deterministic lexical embeddings, MMR or
+similarity retrieval, and an extractive answerer. It runs without cloud
+accounts, model downloads, or API calls. The optional cloud mode uses Gemini
+embeddings and generation with ChromaDB Cloud.
 
-## Setup
+## Run locally
 
-Install dependencies:
+From the repository root, copy the local configuration template and install
+the local/test dependencies:
 
 ```powershell
-python -m pip install -r requirements.txt
+Copy-Item .env.example .env
+python -m pip install -r requirements-dev.txt
 ```
 
-Set these environment variables (for example in a local `.env` file):
+The example config selects local mode and a development-only API key. Keep
+the server bound to `127.0.0.1`; do not reuse that key or expose this
+development setup to a network.
+
+Put `.txt` documents under `data/` and index them:
+
+```powershell
+python ingest.py
+```
+
+Ingestion splits documents into overlapping chunks and upserts them into a
+persistent local Chroma database under `.kairo/chroma/`. The default chunk size
+is 1,000 characters with 150 characters of overlap. Re-running ingestion
+updates matching chunks rather than creating duplicates. The current checked-in
+sample is just a smoke-test document; replace or supplement it with your own
+corpus.
+
+Start the browser demo, which calls the same real local RAG service as the API:
+
+```powershell
+python -m uvicorn demo:app --host 127.0.0.1 --port 8000
+```
+
+Open [http://127.0.0.1:8000/](http://127.0.0.1:8000/) and try asking
+“Who is Bernard?” against the checked-in sample. Or use the CLI:
+
+```powershell
+python main.py
+```
+
+The local embedding function is deterministic feature hashing over words,
+word pairs, and character n-grams. It is a small, model-free lexical baseline;
+it does **not** provide the semantic understanding of Gemini embeddings. The
+local answerer extracts relevant sentences from retrieved passages rather
+than generating new text. This makes the local setup useful for development
+and an honest offline baseline, not a substitute for evaluating the cloud
+version.
+
+The HTTP API requires `KAIRO_API_KEY` and the development config provides a
+local-only example value. The browser page receives this key to make localhost
+requests, so use the included demo only on loopback. Configure TLS, real
+credentials, and deployment-level security before any network exposure.
+
+## Optional Gemini and Chroma Cloud mode
+
+Install the additional cloud and RAGAS dependencies:
+
+```powershell
+python -m pip install -r requirements-cloud.txt
+```
+
+Set `KAIRO_MODE=cloud` in `.env` and configure:
 
 | Variable | Purpose |
 | --- | --- |
@@ -21,35 +75,18 @@ Set these environment variables (for example in a local `.env` file):
 | `CHROMADB_API_KEY` | ChromaDB Cloud API key |
 | `TENANT_ID` | ChromaDB Cloud tenant |
 | `DATABASE_ID` | ChromaDB Cloud database |
-| `KAIRO_API_KEY` | Required bearer key for the HTTP API |
-| `GEMINI_MODEL` | Optional generation model; defaults to `gemini-2.5-flash` |
-| `GEMINI_JUDGE_MODEL` | Optional evaluation judge model; defaults to `gemini-2.5-flash` |
+| `KAIRO_API_KEY` | Bearer key required by the HTTP API |
+| `GEMINI_MODEL` | Optional generation model (default `gemini-2.5-flash`) |
+| `GEMINI_JUDGE_MODEL` | Optional RAGAS judge model (default `gemini-2.5-flash`) |
 
-Place `.txt` files under `data/`, then ingest them:
-
-```powershell
-python ingest.py
-```
-
-Ingestion streams documents into Chroma in batches of 100 and derives stable
-IDs from each document's relative path and content, so rerunning ingestion
-updates existing records rather than creating duplicates.
-
-Start the interactive chatbot with:
+Re-run `python ingest.py` after selecting cloud mode to index your documents
+into the cloud collection. Start the API directly with:
 
 ```powershell
-python main.py
+python -m uvicorn api:app --host 127.0.0.1 --port 8000
 ```
 
-## HTTP API and scaling
-
-Run the API with multiple worker processes:
-
-```powershell
-uvicorn api:app --host 0.0.0.0 --port 8000 --workers 4
-```
-
-Send `POST /query` with a JSON body such as:
+The API's `POST /query` accepts a JSON body such as:
 
 ```json
 {
@@ -59,52 +96,42 @@ Send `POST /query` with a JSON body such as:
 }
 ```
 
-Include `Authorization: Bearer <KAIRO_API_KEY>` with API requests. The API
-refuses to start if no key is configured. Use TLS and configure deployment-level
-rate limits before exposing it beyond a trusted network.
+Include an `Authorization: Bearer <KAIRO_API_KEY>` header. Choose
+`retrieval_mode: "similarity"` for the baseline. The response includes the
+answer, retrieved contexts, selected variant, and end-to-end latency. More
+workers can be run against the shared Chroma collection, but this code alone
+does not establish production reliability or throughput.
 
-Use `retrieval_mode: "similarity"` for the baseline arm. The response includes
-the selected variant, retrieved contexts, answer, and end-to-end latency in
-milliseconds. Each worker initializes its own service/client while using the
-shared ChromaDB Cloud collection; the API keeps no per-user session state.
-Deploying additional workers is an implementation path for horizontal scaling,
-not a benchmark proving throughput or reliability under production load.
+## RAGAS evaluation (cloud mode)
 
-## RAGAS evaluation
-
-Create a **hand-reviewed** JSONL file with one reference answer per query. Use
-edge cases from the actual document collection; do not use generated or
-unverified answers as ground truth. Each non-empty line must have this shape:
+Create a hand-reviewed JSONL dataset with at least 50 real questions and
+reference answers based on your corpus. Each non-empty line has this form:
 
 ```json
-{"question":"What is the documented leave approval process?","reference":"The reference answer verified against the source documents."}
+{"question":"What is the documented leave approval process?","reference":"The answer verified against the source documents."}
 ```
 
-Run the same golden set against similarity and MMR:
+With cloud mode and credentials configured, run:
 
 ```powershell
 python evaluate_rag.py --dataset evaluation/golden.jsonl --output evaluation/results.json
 ```
 
-The evaluator requires at least 50 examples by default. It uses RAGAS with
-Gemini-as-judge to score context precision, faithfulness, and answer relevancy.
-The reported composite is this project's arithmetic mean of those three
-metrics; relative improvement is calculated against the similarity baseline.
-The report includes the dataset SHA-256, per-example metric scores, and mean,
-p50, and p95 end-to-end latency. Evaluation makes Gemini API calls and incurs
-their associated cost. Review the golden answers and per-example scores before
-using an aggregate score as a résumé claim.
+The harness compares similarity with MMR on the same questions and uses Gemini
+as a RAGAS judge for context precision, faithfulness, and answer relevancy. It
+reports the composite (the arithmetic mean of those three metrics), relative
+change, per-example scores, dataset hash, and mean/p50/p95 latency. Evaluation
+calls Gemini and may incur API costs. The repository does not contain a
+reviewed 50-question dataset or a measured quality gain. Do not claim a 40%
+improvement unless an actual run on your reviewed dataset demonstrates it.
 
-The repository contains the evaluation harness, not a 50-query golden dataset
-or a measured 40% result. Do not claim a 40% gain unless a run on your real,
-reviewed dataset produces and supports that number. Similarly, the existing
-code does not establish a 10,000-document production corpus or sub-200 ms
-end-to-end latency; validate those separately against the deployed collection
-and load profile before using those figures.
+Likewise, the code does not verify a 10,000-document corpus or sub-200 ms
+latency. Measure those against the real indexed data and intended deployment
+load. Separate retrieval-only latency from end-to-end response latency,
+especially when Gemini is generating the answer.
 
-Run the local test suite with:
+## Tests
 
 ```powershell
-python -m pip install -r requirements-dev.txt
 python -m pytest -q
 ```

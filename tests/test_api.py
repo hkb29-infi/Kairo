@@ -71,6 +71,7 @@ def test_api_startup_requires_an_api_key(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("KAIRO_API_KEY", raising=False)
+    monkeypatch.setattr("api.load_dotenv", lambda: None)
     app = create_app(FakeRAGService)
 
     with pytest.raises(RuntimeError, match="KAIRO_API_KEY must be configured"):

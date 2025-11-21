@@ -1,4 +1,6 @@
 import json
+import sys
+from types import ModuleType
 from pathlib import Path
 
 import pytest
@@ -95,16 +97,44 @@ def test_run_comparison_evaluates_same_cases_with_both_variants(
             self.scores = scores
 
         def to_pandas(self):
-            import pandas as pd
+            return self
 
-            return pd.DataFrame(self.scores)
+        def __len__(self) -> int:
+            return len(next(iter(self.scores.values())))
+
+        def __contains__(self, name: str) -> bool:
+            return name in self.scores
+
+        def __getitem__(self, name: str) -> list[float]:
+            return self.scores[name]
 
     def fake_evaluate(**kwargs):
         assert len(kwargs["dataset"]) == 1
         assert kwargs["raise_exceptions"] is True
         return FakeResult(next(score_sets))
 
-    monkeypatch.setattr("ragas.evaluate", fake_evaluate)
+    class FakeMetric:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+    fake_ragas = ModuleType("ragas")
+    fake_ragas.__version__ = "test"
+    fake_ragas.EvaluationDataset = type(
+        "FakeEvaluationDataset",
+        (),
+        {
+            "from_list": classmethod(
+                lambda cls, records: records
+            )
+        },
+    )
+    fake_ragas.evaluate = fake_evaluate
+    fake_metrics = ModuleType("ragas.metrics")
+    fake_metrics.Faithfulness = FakeMetric
+    fake_metrics.LLMContextPrecisionWithReference = FakeMetric
+    fake_metrics.ResponseRelevancy = FakeMetric
+    monkeypatch.setitem(sys.modules, "ragas", fake_ragas)
+    monkeypatch.setitem(sys.modules, "ragas.metrics", fake_metrics)
     report = evaluation.run_comparison(
         dataset,
         [EvalCase("Question", "Reference")],
