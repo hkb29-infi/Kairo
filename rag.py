@@ -10,6 +10,7 @@ from langchain_core.language_models import BaseLanguageModel
 
 from ingest import get_storage_mode, setup_vector_store
 
+# the RAG pipeline to make the retrieved answers better match the grounded truth we provide
 RetrievalMode = Literal["similarity", "mmr"]
 TOKEN_PATTERN = re.compile(r"\w+", flags=re.UNICODE)
 STOP_WORDS = {

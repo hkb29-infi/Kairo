@@ -121,14 +121,10 @@ The harness compares similarity with MMR on the same questions and uses Gemini
 as a RAGAS judge for context precision, faithfulness, and answer relevancy. It
 reports the composite (the arithmetic mean of those three metrics), relative
 change, per-example scores, dataset hash, and mean/p50/p95 latency. Evaluation
-calls Gemini and may incur API costs. The repository does not contain a
-reviewed 50-question dataset or a measured quality gain. Do not claim a 40%
+calls Gemini and may incur API costs.
 improvement unless an actual run on your reviewed dataset demonstrates it.
 
-Likewise, the code does not verify a 10,000-document corpus or sub-200 ms
-latency. Measure those against the real indexed data and intended deployment
-load. Separate retrieval-only latency from end-to-end response latency,
-especially when Gemini is generating the answer.
+The testing for the mertrics is still to be done for proper improvement tracking
 
 ## Tests
 
